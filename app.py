@@ -1,68 +1,43 @@
-# app.py
-import os
-import base64
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import numpy as np
-import gradio as gr
-from lineart import lineart
-from sketch import pencil
-from comic import comic_effect
-from animegan import apply_anime
+from PIL import Image
+import io
+import base64
 
-PORT = int(os.environ.get("PORT", 8080))
+app = FastAPI(title="AI 漫画线稿 API")
 
-def bgr_to_rgb(img):
-    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-def rgb_to_bgr(img):
-    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-def to_base64_image(img_bgr):
-    _, buf = cv2.imencode(".png", img_bgr)
-    return base64.b64encode(buf.tobytes()).decode()
-
-def from_pil_or_np(img):
-    # Gradio 给的是 PIL 图或 numpy RGB
-    if isinstance(img, np.ndarray):
-        return rgb_to_bgr(img)
-    else:
-        arr = np.array(img)
-        return rgb_to_bgr(arr)
-
-def process(img, style):
-    if img is None:
-        return None
-
-    bgr = from_pil_or_np(img)
-
-    if style == "纯净线稿":
-        out = lineart(bgr)
-    elif style == "漫画线稿":
-        out = comic_effect(bgr)
-    elif style == "素描风":
-        out = pencil(bgr)
-    elif style == "二次元 AnimeGAN":
-        out = apply_anime(bgr)
-    else:
-        out = lineart(bgr)
-
-    return bgr_to_rgb(out)
-
-title = "AI 漫画线稿（Render 部署示例）"
-desc = "上传照片 → 选择风格 → 点击转换（纯线稿 / 漫画线稿 / 素描 / 二次元）"
-
-demo = gr.Interface(
-    fn=process,
-    inputs=[
-        gr.Image(type="pil", label="上传图片"),
-        gr.Dropdown(["纯净线稿", "漫画线稿", "素描风", "二次元 AnimeGAN"], label="选择风格")
-    ],
-    outputs=gr.Image(type="numpy", label="输出"),
-    title=title,
-    description=desc,
-    allow_flagging="never"
+# 允许小程序跨域请求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-if __name__ == "__main__":
-    # Render 会提供 PORT 环境变量
-    demo.launch(server_name="0.0.0.0", server_port=PORT)
+def process_image(image_bytes):
+    # 打开图片
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img_np = np.array(img)
+    # 转灰度
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (21,21), 0)
+    sketch = cv2.divide(gray, blur, scale=255)
+    sketch_rgb = cv2.cvtColor(sketch, cv2.COLOR_GRAY2RGB)
+    # 转回 base64
+    pil_img = Image.fromarray(sketch_rgb)
+    buffered = io.BytesIO()
+    pil_img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return img_str
+
+@app.post("/process")
+async def process(file: UploadFile = File(...)):
+    try:
+        img_bytes = await file.read()
+        img_base64 = process_image(img_bytes)
+        return JSONResponse(content={"result": img_base64})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
