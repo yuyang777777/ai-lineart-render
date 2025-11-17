@@ -1,0 +1,5 @@
+gradio>=3.0
+opencv-python-headless
+numpy
+pillow
+requests
